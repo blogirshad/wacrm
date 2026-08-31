@@ -391,7 +391,7 @@ export interface Deal {
   assignee?: Profile;
 }
 
-export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
+export type BroadcastStatus = 'draft' | 'sending' | 'sent' | 'failed';
 export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed';
 
 export interface Broadcast {
@@ -402,7 +402,6 @@ export interface Broadcast {
   template_language: string;
   template_variables?: Record<string, unknown>;
   audience_filter?: Record<string, unknown>;
-  scheduled_at?: string;
   status: BroadcastStatus;
   total_recipients: number;
   sent_count: number;

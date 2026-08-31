@@ -9,6 +9,7 @@ import {
   Tags,
   Filter,
   Upload,
+  FileText,
   Loader2,
   ArrowRight,
   ArrowLeft,
@@ -91,6 +92,8 @@ export function Step2SelectAudience({
   const [loadingFields, setLoadingFields] = useState(false);
   const [estimatedCount, setEstimatedCount] = useState<number | null>(null);
   const [loadingCount, setLoadingCount] = useState(false);
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const [csvFileName, setCsvFileName] = useState<string | null>(null);
 
   // Tags are used both by the primary "Filter by Tags" audience type
   // AND by the exclude-list below — so always load once on mount.
@@ -229,6 +232,168 @@ export function Step2SelectAudience({
     onUpdate({ ...audience, excludeTagIds: updated });
   }
 
+  function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let insideQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (insideQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === ',' && !insideQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  result.push(current.trim());
+
+  return result;
+}
+
+function parseCSV(
+  text: string
+): { phone: string; name?: string }[] {
+  const cleanText = text.replace(/^\uFEFF/, '').trim();
+
+  if (!cleanText) {
+    throw new Error('CSV file is empty.');
+  }
+
+  const lines = cleanText
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0);
+
+  if (lines.length < 2) {
+    throw new Error(
+      'CSV must contain a header and at least one contact.'
+    );
+  }
+
+  const headers = parseCSVLine(lines[0]).map((header) =>
+    header.trim().toLowerCase()
+  );
+
+  const phoneIndex = headers.findIndex(
+    (header) =>
+      header === 'phone' ||
+      header === 'phone number' ||
+      header === 'mobile' ||
+      header === 'mobile number'
+  );
+
+  const nameIndex = headers.findIndex(
+    (header) =>
+      header === 'name' ||
+      header === 'full name'
+  );
+
+  if (phoneIndex === -1) {
+    throw new Error(
+      'CSV must contain a "phone" column. Example: phone,name'
+    );
+  }
+
+  const contacts: { phone: string; name?: string }[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 1; i < lines.length; i++) {
+    const columns = parseCSVLine(lines[i]);
+
+    let phone = columns[phoneIndex] ?? '';
+
+    const name =
+      nameIndex >= 0
+        ? (columns[nameIndex] ?? '').trim()
+        : '';
+
+    // Remove +, spaces, brackets, hyphens etc.
+    phone = phone.replace(/[^\d]/g, '');
+
+    if (!phone) {
+      continue;
+    }
+
+    // Basic international phone number validation.
+    if (phone.length < 10 || phone.length > 15) {
+      continue;
+    }
+
+    // Remove duplicate numbers.
+    if (seen.has(phone)) {
+      continue;
+    }
+
+    seen.add(phone);
+
+    contacts.push({
+      phone,
+      ...(name ? { name } : {}),
+    });
+  }
+
+  if (contacts.length === 0) {
+    throw new Error(
+      'No valid phone numbers were found in the CSV.'
+    );
+  }
+
+  return contacts;
+}
+
+async function handleCSVUpload(
+  event: React.ChangeEvent<HTMLInputElement>
+) {
+  const file = event.target.files?.[0];
+
+  if (!file) {
+    return;
+  }
+
+  setCsvError(null);
+  setCsvFileName(file.name);
+
+  try {
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      throw new Error('Please select a CSV file.');
+    }
+
+    const text = await file.text();
+
+    const contacts = parseCSV(text);
+
+    onUpdate({
+      ...audience,
+      type: 'csv',
+      csvContacts: contacts,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Unable to read CSV file.';
+
+    setCsvError(message);
+
+    onUpdate({
+      ...audience,
+      type: 'csv',
+      csvContacts: undefined,
+    });
+  }
+
+  // Allows selecting the same file again.
+  event.target.value = '';
+}
   function updateCustomField(patch: Partial<CustomFieldFilter>) {
     const prev = audience.customField ?? {
       fieldId: '',
@@ -390,6 +555,70 @@ export function Step2SelectAudience({
           )}
         </div>
       )}
+
+      {audience.type === 'csv' && (
+  <div className="rounded-xl border border-border bg-card/50 p-4">
+    <div className="mb-4">
+      <p className="text-sm font-medium text-foreground">
+        Upload CSV
+      </p>
+
+      <p className="mt-1 text-xs text-muted-foreground">
+        Upload a CSV containing phone numbers and optional names.
+      </p>
+    </div>
+
+    <label
+      htmlFor="broadcast-csv-upload"
+      className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 px-6 py-8 text-center transition hover:border-primary/50 hover:bg-primary/5"
+    >
+      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <Upload className="h-6 w-6" />
+      </div>
+
+      <p className="text-sm font-medium text-foreground">
+        {csvFileName ?? 'Choose CSV file'}
+      </p>
+
+      <p className="mt-1 text-xs text-muted-foreground">
+        CSV format: phone,name
+      </p>
+
+      <span className="mt-4 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
+        Choose File
+      </span>
+
+      <input
+        id="broadcast-csv-upload"
+        type="file"
+        accept=".csv,text/csv"
+        className="hidden"
+        onChange={handleCSVUpload}
+      />
+    </label>
+
+    {csvError && (
+      <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+        {csvError}
+      </div>
+    )}
+
+    {audience.csvContacts &&
+      audience.csvContacts.length > 0 && (
+        <div className="mt-4 flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2">
+          <FileText className="h-4 w-4 text-primary" />
+
+          <span className="text-sm text-foreground">
+            {audience.csvContacts.length.toLocaleString()}
+          </span>
+
+          <span className="text-xs text-muted-foreground">
+            valid contacts loaded
+          </span>
+        </div>
+      )}
+  </div>
+    )}
 
       {/* Exclude list — applies regardless of audience type */}
       <div className="rounded-xl border border-border bg-card/50 p-4">
